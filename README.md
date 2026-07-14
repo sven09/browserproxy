@@ -8,8 +8,7 @@ Built for people who need a different browser depending on where a link came
 from (customer mail, for example), even though macOS only allows _one_ default
 browser.
 
-![BrowserProxy's picker: the target URL on top, the installed browsers below it,
-numbered for direct selection](screen.png)
+![BrowserProxy's picker: the target URL on top, the installed browsers below it, numbered for direct selection](Screen.png)
 
 ## Features
 
