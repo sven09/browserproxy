@@ -2,11 +2,11 @@ import Foundation
 
 /// On-disk container for rules, matching the `rules.json` schema.
 private struct RulesFile: Codable {
-    var version: Int = 1
+    var version: Int = 2
     var rules: [Rule] = []
 }
 
-/// Loads, matches, and persists the URL → browser routing rules.
+/// Loads, matches, and persists the routing rules.
 final class RuleStore {
     private let fileURL = AppSupport.url(for: "rules.json")
     private(set) var rules: [Rule]
@@ -27,14 +27,14 @@ final class RuleStore {
         }
     }
 
-    /// Returns the bundle identifier of the browser the URL should open in,
-    /// or nil if no rule matches (→ caller shows the picker).
+    /// Returns the bundle identifier of the browser the URL should open in when
+    /// opened from `source`, or nil if no rule matches (→ caller shows the picker).
     ///
     /// The caller is responsible for verifying the browser is still installed;
-    /// see `matchInstalled(url:registry:)` for the resolved variant.
-    func matchBundleID(for url: URL) -> String? {
+    /// see `matchInstalled(for:source:registry:)` for the resolved variant.
+    func matchBundleID(for url: URL, source: SourceApp?) -> String? {
         let host = (url.host ?? "").lowercased()
-        for rule in sortedRules where rule.matches(url: url, host: host) {
+        for rule in sortedRules where rule.matches(url: url, host: host, source: source) {
             return rule.browserBundleID
         }
         return nil
@@ -42,9 +42,9 @@ final class RuleStore {
 
     /// Like `matchBundleID`, but skips rules whose target browser is no longer
     /// installed so a stale rule falls through to the picker instead of failing.
-    func matchInstalled(for url: URL, registry: BrowserRegistry) -> Browser? {
+    func matchInstalled(for url: URL, source: SourceApp?, registry: BrowserRegistry) -> Browser? {
         let host = (url.host ?? "").lowercased()
-        for rule in sortedRules where rule.matches(url: url, host: host) {
+        for rule in sortedRules where rule.matches(url: url, host: host, source: source) {
             if let browser = registry.browser(withBundleID: rule.browserBundleID) {
                 return browser
             }
@@ -54,7 +54,11 @@ final class RuleStore {
     }
 
     /// Rules ordered by priority (desc), then specificity, then recency.
-    private var sortedRules: [Rule] {
+    private var sortedRules: [Rule] { Self.sorted(rules) }
+
+    /// Orders rules so the first match wins: `priority` (desc), then specificity,
+    /// then age (older first). Pure and static so it can be tested without disk.
+    static func sorted(_ rules: [Rule]) -> [Rule] {
         rules.sorted { a, b in
             if a.priority != b.priority { return a.priority > b.priority }
             let sa = specificity(a), sb = specificity(b)
@@ -63,18 +67,28 @@ final class RuleStore {
         }
     }
 
-    /// Rough specificity so more precise rules win ties: exact/regex > glob >
-    /// domain > domainSuffix, with longer patterns preferred.
-    private func specificity(_ rule: Rule) -> Int {
-        let base: Int
-        switch rule.matchType {
-        case .exact: base = 400
-        case .regex: base = 300
-        case .glob: base = 200
-        case .domain: base = 150
-        case .domainSuffix: base = 100
+    /// Specificity so the most precise rule wins ties. App rules outrank URL rules
+    /// (a rule tied to the source application is considered the stronger signal):
+    /// a rule with an app condition always sorts above one without. Within that,
+    /// a combined app+URL rule beats an app-only rule, and among URL conditions
+    /// exact/regex > glob > domain > domainSuffix, with longer patterns preferred.
+    static func specificity(_ rule: Rule) -> Int {
+        // Larger than any realistic urlSpecificity, so the app tier dominates.
+        let appTier = 1_000_000
+        var score = rule.hasAppCondition ? appTier : 0
+        if rule.hasURLCondition {
+            let base: Int
+            switch rule.matchType {
+            case .exact: base = 400
+            case .regex: base = 300
+            case .glob: base = 200
+            case .domain: base = 150
+            case .domainSuffix: base = 100
+            case nil: base = 0
+            }
+            score += base + (rule.pattern?.count ?? 0)
         }
-        return base + rule.pattern.count
+        return score
     }
 
     // MARK: - Mutation
@@ -85,18 +99,21 @@ final class RuleStore {
         save()
     }
 
-    /// Convenience for the learn flow: pin a host (or its registrable domain)
-    /// to a browser. When `exactHost` is true the full host is pinned, otherwise
-    /// the registrable domain is used as a domain suffix.
+    /// Learn flow for the **URL pin**: bind a host (or its registrable domain) to a
+    /// browser. When `exactHost` is true the full host is pinned, otherwise the
+    /// registrable domain is used as a domain suffix.
     ///
-    /// Re-pinning a pattern **edits** its rule rather than adding a second one, so
-    /// bypassing the rules (shift) and pinning a different browser is a complete
-    /// way to change a rule's target without touching rules.json.
-    func learn(url: URL, browser: Browser, exactHost: Bool) {
+    /// Re-pinning a pattern **edits** its URL-only rule rather than adding a second
+    /// one, so bypassing the rules (shift) and pinning a different browser is a
+    /// complete way to change a rule's target without touching rules.json.
+    func learnURL(url: URL, browser: Browser, exactHost: Bool) {
         guard let host = url.host?.lowercased(), !host.isEmpty else { return }
         let (pattern, type) = Self.rulePattern(forHost: host, exactHost: exactHost)
 
-        if let i = rules.firstIndex(where: { $0.pattern == pattern && $0.matchType == type }) {
+        // Only match a URL-only rule; never rewrite a combined app+URL rule.
+        if let i = rules.firstIndex(where: {
+            $0.pattern == pattern && $0.matchType == type && $0.sourceAppBundleID == nil
+        }) {
             // Same target and already active → nothing to write.
             if rules[i].browserBundleID == browser.id && rules[i].enabled { return }
             rules[i].browserBundleID = browser.id
@@ -105,6 +122,22 @@ final class RuleStore {
             return
         }
         add(Rule(pattern: pattern, matchType: type, browserBundleID: browser.id))
+    }
+
+    /// Learn flow for the **App pin**: bind everything opened from `source` to a
+    /// browser. Re-pinning the same app edits its app-only rule in place.
+    func learnApp(source: SourceApp, browser: Browser) {
+        // Only match an app-only rule; never rewrite a combined app+URL rule.
+        if let i = rules.firstIndex(where: {
+            $0.sourceAppBundleID == source.bundleID && !$0.hasURLCondition
+        }) {
+            if rules[i].browserBundleID == browser.id && rules[i].enabled { return }
+            rules[i].browserBundleID = browser.id
+            rules[i].enabled = true
+            save()
+            return
+        }
+        add(Rule(sourceAppBundleID: source.bundleID, browserBundleID: browser.id))
     }
 
     /// Derives a rule pattern from a host. `shop.kunde-x.de` → `kunde-x.de`
@@ -152,7 +185,7 @@ final class RuleStore {
     }
 
     func save() {
-        let file = RulesFile(version: 1, rules: rules)
+        let file = RulesFile(version: 2, rules: rules)
         if let data = try? AppSupport.encoder.encode(file) {
             try? data.write(to: fileURL, options: .atomic)
         }

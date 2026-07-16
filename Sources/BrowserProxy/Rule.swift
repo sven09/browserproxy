@@ -15,11 +15,25 @@ enum MatchType: String, Codable {
     case exact
 }
 
-/// A single URL-pattern → browser mapping.
+/// A single routing rule. A rule can constrain on a **URL pattern**, on the
+/// **source application** a link was opened from, or on both:
+///
+/// - URL-only  (`pattern` set, `sourceAppBundleID` nil) — the classic behaviour:
+///   `kunde-x.de → Edge`.
+/// - App-only  (`pattern` nil, `sourceAppBundleID` set) — "everything opened from
+///   this app goes here": `Cursor → Chrome`.
+/// - Combined  (both set) — the URL pattern, but only when opened from that app.
+///
+/// A rule with neither condition never matches (it would otherwise catch every
+/// link). See `RuleStore` for how the winner is chosen when several match.
 struct Rule: Codable, Identifiable {
     let id: UUID
-    var pattern: String
-    var matchType: MatchType
+    /// URL pattern to match, or nil for an app-only rule.
+    var pattern: String?
+    /// How `pattern` is compared. Meaningful only when `pattern` is set.
+    var matchType: MatchType?
+    /// Bundle id of the source application to match, or nil for a URL-only rule.
+    var sourceAppBundleID: String?
     /// Bundle identifier of the target browser.
     var browserBundleID: String
     var enabled: Bool
@@ -28,8 +42,9 @@ struct Rule: Codable, Identifiable {
 
     init(
         id: UUID = UUID(),
-        pattern: String,
-        matchType: MatchType,
+        pattern: String? = nil,
+        matchType: MatchType? = nil,
+        sourceAppBundleID: String? = nil,
         browserBundleID: String,
         enabled: Bool = true,
         priority: Int = 0,
@@ -38,15 +53,37 @@ struct Rule: Codable, Identifiable {
         self.id = id
         self.pattern = pattern
         self.matchType = matchType
+        self.sourceAppBundleID = sourceAppBundleID
         self.browserBundleID = browserBundleID
         self.enabled = enabled
         self.priority = priority
         self.createdAt = createdAt
     }
 
-    /// Returns true if this rule matches the given URL. Disabled rules never match.
-    func matches(url: URL, host: String) -> Bool {
-        guard enabled else { return false }
+    /// True when the rule declares a URL condition.
+    var hasURLCondition: Bool { pattern != nil && matchType != nil }
+    /// True when the rule declares a source-app condition.
+    var hasAppCondition: Bool { sourceAppBundleID != nil }
+
+    /// Returns true if this rule matches the given URL opened from `source`.
+    /// Disabled rules, and rules with no condition at all, never match. Every
+    /// condition the rule declares must be satisfied (logical AND).
+    func matches(url: URL, host: String, source: SourceApp?) -> Bool {
+        guard enabled, hasURLCondition || hasAppCondition else { return false }
+
+        // App condition: an app rule can only match when the source is known.
+        if hasAppCondition, source?.bundleID != sourceAppBundleID {
+            return false
+        }
+        // URL condition.
+        if hasURLCondition, !matchesURL(url: url, host: host) {
+            return false
+        }
+        return true
+    }
+
+    private func matchesURL(url: URL, host: String) -> Bool {
+        guard let pattern, let matchType else { return false }
         let full = url.absoluteString
 
         switch matchType {

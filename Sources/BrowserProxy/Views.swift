@@ -9,17 +9,22 @@ final class ClickView: NSView {
     }
 }
 
-/// One row in the picker: shortcut number, icon, browser name, and a pin button.
+/// One row in the picker: shortcut number, icon, browser name, and up to two pin
+/// buttons — one to pin the source app, one to pin the URL.
 final class BrowserRowView: NSView {
     var onOpen: (() -> Void)?
-    /// exactHost == true when the user held Option while pinning.
-    var onPin: ((_ exactHost: Bool) -> Void)?
+    /// URL pin. `exactHost` == true when the user held Option while pinning.
+    var onPinURL: ((_ exactHost: Bool) -> Void)?
+    /// App pin. Only wired up when the source app is known.
+    var onPinApp: (() -> Void)?
     var onHover: (() -> Void)?
 
     private let highlightLayer = CALayer()
     private var trackingArea: NSTrackingArea?
 
-    init(index: Int, browser: Browser) {
+    /// - Parameter sourceAppName: name of the app the link came from, or nil when
+    ///   unknown — in which case the App pin button is omitted.
+    init(index: Int, browser: Browser, sourceAppName: String?) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -42,34 +47,59 @@ final class BrowserRowView: NSView {
         name.lineBreakMode = .byTruncatingTail
         name.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let pin = NSButton()
-        pin.bezelStyle = .inline
-        pin.isBordered = false
-        pin.image = NSImage(
+        var views: [NSView] = [number, iconView, name]
+
+        // App pin (left of the URL pin) — only when we know the source app.
+        var appPin: NSButton?
+        if let sourceAppName {
+            let button = NSButton()
+            button.bezelStyle = .inline
+            button.isBordered = false
+            button.image = NSImage(
+                systemSymbolName: "macwindow",
+                accessibilityDescription: "Pin this app to this browser"
+            )
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = #selector(pinAppClicked)
+            button.toolTip = "Pin all links from \(sourceAppName) to this browser"
+            views.append(button)
+            appPin = button
+        }
+
+        let urlPin = NSButton()
+        urlPin.bezelStyle = .inline
+        urlPin.isBordered = false
+        urlPin.image = NSImage(
             systemSymbolName: "pin", accessibilityDescription: "Pin domain to this browser"
         )
-        pin.imagePosition = .imageOnly
-        pin.target = self
-        pin.action = #selector(pinClicked)
-        pin.toolTip = "Pin this domain to this browser (⌥ for the exact host)"
+        urlPin.imagePosition = .imageOnly
+        urlPin.target = self
+        urlPin.action = #selector(pinURLClicked)
+        urlPin.toolTip = "Pin this domain to this browser (⌥ for the exact host)"
+        views.append(urlPin)
 
-        let stack = NSStackView(views: [number, iconView, name, pin])
+        let stack = NSStackView(views: views)
         stack.orientation = .horizontal
         stack.alignment = .centerY
-        stack.spacing = 10
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
-        NSLayoutConstraint.activate([
+        var constraints: [NSLayoutConstraint] = [
             heightAnchor.constraint(equalToConstant: 40),
             number.widthAnchor.constraint(equalToConstant: 14),
             iconView.widthAnchor.constraint(equalToConstant: 26),
             iconView.heightAnchor.constraint(equalToConstant: 26),
-            pin.widthAnchor.constraint(equalToConstant: 22),
+            urlPin.widthAnchor.constraint(equalToConstant: 22),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
+        ]
+        if let appPin {
+            constraints.append(appPin.widthAnchor.constraint(equalToConstant: 22))
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -85,9 +115,13 @@ final class BrowserRowView: NSView {
                : NSColor.clear.cgColor
     }
 
-    @objc private func pinClicked() {
+    @objc private func pinURLClicked() {
         let exact = NSEvent.modifierFlags.contains(.option)
-        onPin?(exact)
+        onPinURL?(exact)
+    }
+
+    @objc private func pinAppClicked() {
+        onPinApp?()
     }
 
     override func mouseDown(with event: NSEvent) {

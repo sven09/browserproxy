@@ -6,11 +6,19 @@ import AppKit
 /// is on screen at a time (the AppDelegate serializes URLs).
 final class PickerController {
 
+    /// What, if anything, to remember alongside opening the browser.
+    enum PinKind {
+        /// Just open; write no rule.
+        case none
+        /// Pin the URL. `exactHost` pins the full host instead of the domain.
+        case url(exactHost: Bool)
+        /// Pin the source application — every link from it opens here.
+        case app
+    }
+
     /// Outcome of a presentation.
     enum Result {
-        /// Open in the chosen browser. When `pin` is true, also create a rule;
-        /// `exactHost` pins the full host instead of the registrable domain.
-        case open(Browser, pin: Bool, exactHost: Bool)
+        case open(Browser, pin: PinKind)
         case cancel
     }
 
@@ -19,6 +27,7 @@ final class PickerController {
     private var finished = false
 
     private var url: URL!
+    private var source: SourceApp?
     private var browsers: [Browser] = []
     private var onResolve: ((Result) -> Void)?
 
@@ -31,6 +40,7 @@ final class PickerController {
 
     func present(
         url: URL,
+        source: SourceApp?,
         browsers: [Browser],
         showFullURLByDefault: Bool,
         onResolve: @escaping (Result) -> Void
@@ -39,6 +49,7 @@ final class PickerController {
         teardown()
 
         self.url = url
+        self.source = source
         self.browsers = browsers
         self.onResolve = onResolve
         self.selectedIndex = 0
@@ -121,6 +132,15 @@ final class PickerController {
         ])
         stack.addArrangedSubview(urlButton)
 
+        // "from <app>" — makes the App pin discoverable and shows what it targets.
+        if let source {
+            let from = NSTextField(labelWithString: "from \(source.name)")
+            from.font = .systemFont(ofSize: 10, weight: .regular)
+            from.textColor = .tertiaryLabelColor
+            from.lineBreakMode = .byTruncatingTail
+            stack.addArrangedSubview(from)
+        }
+
         let separator = NSBox()
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
@@ -130,9 +150,10 @@ final class PickerController {
         // Browser rows.
         rowViews.removeAll()
         for (i, browser) in browsers.enumerated() {
-            let row = BrowserRowView(index: i, browser: browser)
+            let row = BrowserRowView(index: i, browser: browser, sourceAppName: source?.name)
             row.onOpen = { [weak self] in self?.choose(index: i) }
-            row.onPin = { [weak self] exact in self?.choosePinned(index: i, exactHost: exact) }
+            row.onPinURL = { [weak self] exact in self?.choosePinnedURL(index: i, exactHost: exact) }
+            row.onPinApp = { [weak self] in self?.choosePinnedApp(index: i) }
             row.onHover = { [weak self] in self?.highlight(index: i) }
             rowViews.append(row)
             stack.addArrangedSubview(row)
@@ -140,8 +161,7 @@ final class PickerController {
         }
 
         // Footer hint.
-        let hint = NSTextField(labelWithString:
-            "1–9 open · ↑↓ move · ⏎ open · ⌘C copy · ⌘P pin · esc cancel")
+        let hint = NSTextField(labelWithString: footerHint())
         hint.font = .systemFont(ofSize: 10)
         hint.textColor = .tertiaryLabelColor
         stack.addArrangedSubview(hint)
@@ -154,6 +174,13 @@ final class PickerController {
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
+    }
+
+    private func footerHint() -> String {
+        var parts = ["1–9 open", "↑↓ move", "⏎ open", "⌘C copy", "⌘P pin URL"]
+        if source != nil { parts.append("⌘⇧P pin App") }
+        parts.append("esc cancel")
+        return parts.joined(separator: " · ")
     }
 
     private func displayURL() -> String {
@@ -207,7 +234,13 @@ final class PickerController {
             case "c":
                 copyURL(); return true
             case "p":
-                choosePinned(index: selectedIndex, exactHost: mods.contains(.option))
+                if mods.contains(.shift) {
+                    // ⌘⇧P → pin the source app.
+                    choosePinnedApp(index: selectedIndex)
+                } else {
+                    // ⌘P → pin the URL; ⌥ pins the exact host.
+                    choosePinnedURL(index: selectedIndex, exactHost: mods.contains(.option))
+                }
                 return true
             default:
                 return false
@@ -244,12 +277,18 @@ final class PickerController {
 
     private func choose(index: Int) {
         guard browsers.indices.contains(index) else { return }
-        resolve(.open(browsers[index], pin: false, exactHost: false))
+        resolve(.open(browsers[index], pin: .none))
     }
 
-    private func choosePinned(index: Int, exactHost: Bool) {
+    private func choosePinnedURL(index: Int, exactHost: Bool) {
         guard browsers.indices.contains(index) else { return }
-        resolve(.open(browsers[index], pin: true, exactHost: exactHost))
+        resolve(.open(browsers[index], pin: .url(exactHost: exactHost)))
+    }
+
+    private func choosePinnedApp(index: Int) {
+        // No source app → nothing to pin to; ignore the request.
+        guard source != nil, browsers.indices.contains(index) else { return }
+        resolve(.open(browsers[index], pin: .app))
     }
 
     func cancel() {

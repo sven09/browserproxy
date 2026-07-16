@@ -9,7 +9,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var prefs = PreferencesStore()
     private lazy var picker = PickerController()
 
-    private var queue: [URL] = []
+    /// A URL awaiting the picker, together with the app it was opened from —
+    /// captured at intake because the source app is only knowable at that instant,
+    /// not later when the (possibly queued) picker is finally shown.
+    private struct Pending {
+        let url: URL
+        let source: SourceApp?
+    }
+
+    private var queue: [Pending] = []
     private var presenting = false
 
     // MARK: - Launch
@@ -71,14 +79,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func enqueue(_ urls: [URL]) {
         // Pick up rule changes made on disk (manual edits, other launches).
         rules.reload()
+        // Capture the source app now, while the clicking app is still frontmost —
+        // by the time the picker appears we may have activated ourselves. All URLs
+        // in one delivery came from the same click, so one lookup covers them.
+        let source = SourceApp.current(excludingBundleID: Bundle.main.bundleIdentifier)
         // Holding the bypass modifier (shift by default) while opening a link
         // skips routing entirely — that is how a domain already owned by a rule
         // gets back to the picker, and how the rule can be re-pinned elsewhere.
         let bypass = bypassRequested()
         for url in urls {
             if bypass {
-                queue.append(url)
-            } else if let browser = rules.matchInstalled(for: url, registry: registry) {
+                queue.append(Pending(url: url, source: source))
+            } else if let browser = rules.matchInstalled(for: url, source: source, registry: registry) {
                 // A rule match opens immediately without the picker.
                 Launcher.open(url, in: browser) { [weak self] in
                     self?.finishIfIdle()
@@ -91,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.finishIfIdle()
                 }
             } else {
-                queue.append(url)
+                queue.append(Pending(url: url, source: source))
             }
         }
         presentNextIfNeeded()
@@ -106,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentNextIfNeeded() {
-        guard !presenting, let url = queue.first else {
+        guard !presenting, let pending = queue.first else {
             finishIfIdle()
             return
         }
@@ -114,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registry.refresh()
         guard !registry.browsers.isEmpty else {
             // No browser to route to; drop the URL to avoid a dead panel.
-            NSLog("BrowserProxy: no browsers found to open \(url)")
+            NSLog("BrowserProxy: no browsers found to open \(pending.url)")
             queue.removeFirst()
             presentNextIfNeeded()
             return
@@ -122,24 +134,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         presenting = true
         picker.present(
-            url: url,
+            url: pending.url,
+            source: pending.source,
             browsers: registry.browsers,
             showFullURLByDefault: prefs.preferences.showFullURLByDefault
         ) { [weak self] result in
-            self?.handle(result: result, for: url)
+            self?.handle(result: result, for: pending)
         }
     }
 
-    private func handle(result: PickerController.Result, for url: URL) {
+    private func handle(result: PickerController.Result, for pending: Pending) {
         presenting = false
         if !queue.isEmpty { queue.removeFirst() }
 
         switch result {
-        case .open(let browser, let pin, let exactHost):
-            if pin {
-                rules.learn(url: url, browser: browser, exactHost: exactHost)
+        case .open(let browser, let pin):
+            switch pin {
+            case .none:
+                break
+            case .url(let exactHost):
+                rules.learnURL(url: pending.url, browser: browser, exactHost: exactHost)
+            case .app:
+                // Only reachable when a source app was detected; guard anyway.
+                if let source = pending.source {
+                    rules.learnApp(source: source, browser: browser)
+                }
             }
-            Launcher.open(url, in: browser) { [weak self] in
+            Launcher.open(pending.url, in: browser) { [weak self] in
                 self?.continueAfterResolve()
             }
         case .cancel:

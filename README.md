@@ -17,20 +17,27 @@ browser.
   - Pick with a **number key (1–9)**, or arrow keys + **⏎**. **Esc** cancels.
   - The **full target URL** is visible (click the URL to expand it).
   - **⌘C** copies the URL to the clipboard.
-- **Rules**: URL pattern → browser (e.g. `customer-x.com → Edge`,
-  `localhost → Chrome`). When a rule matches, the link opens **immediately,
-  without the picker**.
-- **Learning**: in the picker, **⌘P** (or a row's pin icon) binds the current
-  domain to that browser — this creates a rule for you. Hold **⌥** while pinning
-  to remember the _exact host_ instead of the domain.
+- **Rules**: route by **URL pattern**, by the **source app** a link came from, or
+  both. When a rule matches, the link opens **immediately, without the picker**:
+  - _URL rule_ — `customer-x.com → Edge`, `localhost → Chrome`.
+  - _App rule_ — `everything opened from Cursor → Chrome`, `Slack → Safari`.
+  - _Combined_ — a URL pattern that only applies when opened from a given app.
+- **Learning**: every picker row has **two pins** —
+  - the **URL pin** (**⌘P** or the 📌 icon) binds the current domain to that
+    browser; hold **⌥** to remember the _exact host_ instead of the domain.
+  - the **App pin** (**⌘⇧P** or the ▢ icon) binds _every link from the app you
+    clicked in_ to that browser. Shown only when the source app is known.
 - **Bypass**: hold **⇧ (Shift)** while clicking a link to skip the rules and get
-  the picker anyway — even for a domain a rule already owns.
+  the picker anyway — even for a domain (or app) a rule already owns.
 
 ### Picker behaviour worth knowing
 
+- Below the URL, the picker shows **`from <app>`** — the app the link was opened
+  from (when it could be determined). That app is what the **App pin** targets.
 - The mouse works too: **click a row** to open it, **hover** to move the
-  selection, **click the pin icon** to pin (**⌥-click** for the exact host). The
-  panel can be dragged around by its background.
+  selection, **click a pin icon** to pin — the ▢ icon pins the app, the 📌 icon
+  pins the URL (**⌥-click** the 📌 for the exact host). The panel can be dragged
+  around by its background.
 - The picker **cancels when it loses focus** — click somewhere else and the link
   is dropped, not opened.
 - If several links arrive at once, they are **queued**: you get one picker after
@@ -139,7 +146,7 @@ there is nothing to restart.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "rules": [
     {
       "id": "6C6F1B60-0F5B-4B1F-9A5E-8C3D2F5A1E77",
@@ -149,6 +156,14 @@ there is nothing to restart.
       "enabled": true,
       "priority": 0,
       "createdAt": "2026-07-14T09:12:33Z"
+    },
+    {
+      "id": "9B2F7A11-6E3C-4D5A-8F02-1C4B9D6E70A3",
+      "sourceAppBundleID": "com.todesktop.230313mzl4w4u92",
+      "browserBundleID": "com.google.Chrome",
+      "enabled": true,
+      "priority": 0,
+      "createdAt": "2026-07-15T10:02:00Z"
     },
     {
       "id": "1E9A7C34-2D48-4F0A-B6C1-77E2A9D40B15",
@@ -163,13 +178,20 @@ there is nothing to restart.
 }
 ```
 
-Note the `{"version": 1, "rules": [...]}` wrapper — a bare array is not accepted.
-All fields are required; `id` is any UUID and `createdAt` is an ISO 8601 date.
+The middle rule above is an **app rule**: every link opened from Cursor
+(`com.todesktop.…`) goes to Chrome. Note the `{"version": 2, "rules": [...]}`
+wrapper — a bare array is not accepted. `id` is any UUID and `createdAt` is an
+ISO 8601 date. Files written by v1 (URL-only rules) still load unchanged.
+
+Each rule declares a **URL condition** (`pattern` + `matchType`), a **source-app
+condition** (`sourceAppBundleID`), or both. A rule must declare at least one; a
+rule that declares neither never matches.
 
 Fields per rule:
 
-- `pattern` — the pattern to match (domain, host, glob or regex).
-- `matchType` — one of:
+- `pattern` — the URL pattern to match (domain, host, glob or regex). Omit for an
+  app-only rule.
+- `matchType` — how `pattern` is compared; required whenever `pattern` is set:
   - `domain` — exact host equality (`localhost`, `192.168.1.10`).
   - `domainSuffix` — the host itself or any subdomain of it: `customer-x.com`
     also matches `shop.customer-x.com`.
@@ -177,6 +199,10 @@ Fields per rule:
     the host first, then the whole URL: `*.internal.corp`.
   - `regex` — regular expression against the whole URL.
   - `exact` — the whole URL, character for character.
+- `sourceAppBundleID` — bundle id of the app the link must have been opened from,
+  e.g. `com.apple.mail`, `com.tinyspeck.slackmacgap`, `com.microsoft.VSCode`. Omit
+  for a URL-only rule. Look one up with `osascript -e 'id of app "Cursor"'`, or
+  just use the picker's **App pin**, which fills it in for you.
 - `browserBundleID` — e.g. `com.apple.Safari`, `com.google.Chrome`,
   `org.mozilla.firefox`, `com.microsoft.edgemac`. To look one up:
   `osascript -e 'id of app "Google Chrome"'`.
@@ -185,20 +211,31 @@ Fields per rule:
 - `createdAt` — ISO 8601; used as the final tie-breaker.
 
 > **A malformed `rules.json` is silently ignored.** If the JSON does not parse or
-> a field is missing, the app behaves as if there were no rules at all and shows
-> the picker for everything. If a rule you added seems to do nothing, suspect the
-> file before you suspect the pattern — the whole file is out, not just that rule.
+> a required field is missing, the app behaves as if there were no rules at all
+> and shows the picker for everything. If a rule you added seems to do nothing,
+> suspect the file before you suspect the pattern — the whole file is out, not
+> just that rule.
 
 ### Which rule wins
 
 The first match in this order routes the URL:
 
-1. **`priority`**, highest first.
-2. **Specificity**, when priorities are equal: `exact` > `regex` > `glob` >
-   `domain` > `domainSuffix`, and within the same type the longer pattern wins.
-   So `shop.customer-x.com` beats `customer-x.com` without you having to touch
-   `priority`.
-3. **Age**, as the tie-breaker: the older rule wins.
+1. **`priority`**, highest first. This overrides everything below, so a
+   high-priority URL rule can still beat an app rule if you want it to.
+2. **App before URL**, when priorities are equal: a rule with a
+   `sourceAppBundleID` outranks a rule without one. So `Cursor → Chrome` wins over
+   `github.com → Firefox` when you click a github link _inside_ Cursor. A
+   **combined** rule (app _and_ URL) is more specific still and beats a plain app
+   rule.
+3. **Specificity** among URL conditions: `exact` > `regex` > `glob` > `domain` >
+   `domainSuffix`, and within the same type the longer pattern wins. So
+   `shop.customer-x.com` beats `customer-x.com` without touching `priority`.
+4. **Age**, as the final tie-breaker: the older rule wins.
+
+An app rule only applies when BrowserProxy could tell **which app the link came
+from** — the app that was frontmost the moment you clicked. Links from a source
+with no meaningful frontmost app (`open …` from a background script, some
+notifications) fall through to URL rules / the picker.
 
 If a matching rule points at a browser that is **no longer installed**, it is
 skipped and the next match is tried — a stale rule falls through to the picker
@@ -211,12 +248,14 @@ you first have to get the picker back:
 
 1. **Hold ⇧ while clicking the link.** The rules are skipped and the picker
    appears, no matter what a rule says.
-2. **Pin the browser you actually want** (⌘P or the pin icon). Pinning a domain
-   that already has a rule **rewrites that rule's target** instead of adding a
-   second, competing one.
+2. **Pin the browser you actually want.** Re-pinning **rewrites the existing
+   rule's target** instead of adding a second, competing one — the **URL pin**
+   (⌘P) rewrites the URL rule for that domain, the **App pin** (⌘⇧P) rewrites the
+   app rule for that source app.
 
-That covers re-targeting a rule. Deleting one, or anything involving `glob`,
-`regex`, `priority` or `enabled`, still means editing `rules.json`.
+That covers re-targeting a rule. Deleting one, combining app + URL into one rule,
+or anything involving `glob`, `regex`, `priority` or `enabled`, still means
+editing `rules.json`.
 
 The bypass modifier is configurable — see `bypassModifier` below. Note it is read
 at the moment the link arrives, so you have to be _holding_ the key as you click,
@@ -224,15 +263,19 @@ not press it afterwards.
 
 ### What pinning writes
 
-⌘P (or the pin icon) creates a `domainSuffix` rule for the **registrable domain**,
-so pinning `shop.customer-x.com` writes `customer-x.com` and thereby also covers
-`mail.customer-x.com`. Multi-label public suffixes are handled, so
-`shop.example.co.uk` writes `example.co.uk` and not `co.uk` — though the list of
-those suffixes is a common-cases table, not the full Public Suffix List.
+The **URL pin** (⌘P or the 📌 icon) creates a `domainSuffix` rule for the
+**registrable domain**, so pinning `shop.customer-x.com` writes `customer-x.com`
+and thereby also covers `mail.customer-x.com`. Multi-label public suffixes are
+handled, so `shop.example.co.uk` writes `example.co.uk` and not `co.uk` — though
+the list of those suffixes is a common-cases table, not the full Public Suffix
+List. Hold **⌥** while pinning to write a `domain` rule for the **exact host**
+instead. `localhost` and IP literals are always pinned exactly.
 
-Hold **⌥** while pinning to write a `domain` rule for the **exact host** instead.
-`localhost` and IP literals are always pinned exactly. Pinning the same
-domain/browser pair twice does not create a duplicate rule.
+The **App pin** (⌘⇧P or the ▢ icon) creates an app-only rule for the source app —
+`sourceAppBundleID` set, no `pattern`. It is offered only when the source app is
+known (the picker shows `from <app>`).
+
+Pinning the same target twice does not create a duplicate rule.
 
 ### `preferences.json`
 
@@ -276,6 +319,10 @@ log stream --predicate 'process == "BrowserProxy"'
 - **Nothing happens when a link is clicked** → the log will say
   `no browsers found` if LaunchServices reports no browser other than
   BrowserProxy itself; the URL is dropped in that case.
+- **An app rule does nothing / the App pin is missing** → BrowserProxy could not
+  determine the source app (the picker shows no `from <app>` line). This happens
+  when the link comes from something with no frontmost app — a background `open`,
+  some notifications. There is no app to key the rule on in that case.
 - **BrowserProxy is not offered as a default browser** → re-run
   `./make-app.sh install` (which calls `lsregister -f`), or log out and back in.
 
@@ -289,7 +336,8 @@ resident in the background.
 | `main.swift`                                                   | app bootstrap, `.accessory` policy                                            |
 | `AppDelegate.swift`                                            | URL intake (`application(_:open:)` + AppleEvent fallback), routing, URL queue |
 | `BrowserRegistry.swift`                                        | find installed browsers (filtering itself out)                                |
-| `Rule.swift` / `RuleStore.swift`                               | rule model, matching, persistence                                             |
+| `SourceApp.swift`                                             | detect which app a link was opened from (frontmost at intake)                 |
+| `Rule.swift` / `RuleStore.swift`                               | rule model (URL + app matching), matching, persistence                        |
 | `PreferencesStore.swift`                                       | preferences                                                                   |
 | `PickerController.swift` / `PickerPanel.swift` / `Views.swift` | picker window, keyboard, cursor position                                      |
 | `Launcher.swift`                                               | opening in the chosen browser                                                 |
