@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:browserproxy}",
+      "name": "Debug BrowserProxy",
+      "target": "BrowserProxy",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug BrowserProxy"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:browserproxy}",
+      "name": "Release BrowserProxy",
+      "target": "BrowserProxy",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release BrowserProxy"
+    }
+  ]
+}
