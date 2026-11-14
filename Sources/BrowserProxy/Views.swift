@@ -9,22 +9,40 @@ final class ClickView: NSView {
     }
 }
 
-/// One row in the picker: shortcut number, icon, browser name, and up to two pin
-/// buttons — one to pin the source app, one to pin the URL.
+/// One row in the picker: shortcut number, icon, browser name, and up to two
+/// toggle buttons — "App" binds every link from the source app to this browser,
+/// "Domain" binds the link's domain. Each shows whether the binding is on.
 final class BrowserRowView: NSView {
     var onOpen: (() -> Void)?
-    /// URL pin. `exactHost` == true when the user held Option while pinning.
-    var onPinURL: ((_ exactHost: Bool) -> Void)?
-    /// App pin. Only wired up when the source app is known.
-    var onPinApp: (() -> Void)?
+    /// Domain button. `exactHost` == true when the user held Option while clicking.
+    var onToggleURL: ((_ exactHost: Bool) -> Void)?
+    /// App button. Only shown when the source app is known.
+    var onToggleApp: (() -> Void)?
     var onHover: (() -> Void)?
 
     private let highlightLayer = CALayer()
     private var trackingArea: NSTrackingArea?
+    private let urlPin: NSButton
+    private let appPin: NSButton?
 
     /// - Parameter sourceAppName: name of the app the link came from, or nil when
-    ///   unknown — in which case the App pin button is omitted.
+    ///   unknown — in which case the App button is omitted.
     init(index: Int, browser: Browser, sourceAppName: String?) {
+        urlPin = Self.makeToggleButton(title: "Domain")
+        urlPin.toolTip = """
+            Click to switch on/off: always open this domain in \(browser.name).
+            ⌥-click: only this exact host. ⌘R in the picker opens rules.json.
+            """
+        if let sourceAppName {
+            let button = Self.makeToggleButton(title: "App")
+            button.toolTip = """
+                Click to switch on/off: always open links from \(sourceAppName) in \(browser.name).
+                ⌘R in the picker opens rules.json.
+                """
+            appPin = button
+        } else {
+            appPin = nil
+        }
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -46,37 +64,16 @@ final class BrowserRowView: NSView {
         name.textColor = .labelColor
         name.lineBreakMode = .byTruncatingTail
         name.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         var views: [NSView] = [number, iconView, name]
-
-        // App pin (left of the URL pin) — only when we know the source app.
-        var appPin: NSButton?
-        if let sourceAppName {
-            let button = NSButton()
-            button.bezelStyle = .inline
-            button.isBordered = false
-            button.image = NSImage(
-                systemSymbolName: "macwindow",
-                accessibilityDescription: "Pin this app to this browser"
-            )
-            button.imagePosition = .imageOnly
-            button.target = self
-            button.action = #selector(pinAppClicked)
-            button.toolTip = "Pin all links from \(sourceAppName) to this browser"
-            views.append(button)
-            appPin = button
+        if let appPin {
+            appPin.target = self
+            appPin.action = #selector(appPinClicked)
+            views.append(appPin)
         }
-
-        let urlPin = NSButton()
-        urlPin.bezelStyle = .inline
-        urlPin.isBordered = false
-        urlPin.image = NSImage(
-            systemSymbolName: "pin", accessibilityDescription: "Pin domain to this browser"
-        )
-        urlPin.imagePosition = .imageOnly
         urlPin.target = self
-        urlPin.action = #selector(pinURLClicked)
-        urlPin.toolTip = "Pin this domain to this browser (⌥ for the exact host)"
+        urlPin.action = #selector(urlPinClicked)
         views.append(urlPin)
 
         let stack = NSStackView(views: views)
@@ -86,20 +83,43 @@ final class BrowserRowView: NSView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
-        var constraints: [NSLayoutConstraint] = [
+        NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 40),
             number.widthAnchor.constraint(equalToConstant: 14),
             iconView.widthAnchor.constraint(equalToConstant: 26),
             iconView.heightAnchor.constraint(equalToConstant: 26),
-            urlPin.widthAnchor.constraint(equalToConstant: 22),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ]
-        if let appPin {
-            constraints.append(appPin.widthAnchor.constraint(equalToConstant: 22))
-        }
-        NSLayoutConstraint.activate(constraints)
+        ])
+    }
+
+    private static func makeToggleButton(title: String) -> NSButton {
+        let button = NSButton(title: title, target: nil, action: nil)
+        button.bezelStyle = .push
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: 11, weight: .medium)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return button
+    }
+
+    /// Shows whether this browser holds the URL binding. `exactHost` labels an
+    /// exact-host binding "Host" instead of "Domain".
+    func setURLPin(active: Bool, exactHost: Bool) {
+        Self.style(urlPin, title: active && exactHost ? "Host" : "Domain", active: active)
+    }
+
+    /// Shows whether this browser holds the source-app binding.
+    func setAppPin(active: Bool) {
+        guard let appPin else { return }
+        Self.style(appPin, title: "App", active: active)
+    }
+
+    private static func style(_ button: NSButton, title: String, active: Bool) {
+        button.title = active ? "✓ \(title)" : title
+        button.bezelColor = active ? .systemGreen : nil
+        button.setAccessibilityValue(active ? "on" : "off")
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -115,13 +135,13 @@ final class BrowserRowView: NSView {
                : NSColor.clear.cgColor
     }
 
-    @objc private func pinURLClicked() {
+    @objc private func urlPinClicked() {
         let exact = NSEvent.modifierFlags.contains(.option)
-        onPinURL?(exact)
+        onToggleURL?(exact)
     }
 
-    @objc private func pinAppClicked() {
-        onPinApp?()
+    @objc private func appPinClicked() {
+        onToggleApp?()
     }
 
     override func mouseDown(with event: NSEvent) {

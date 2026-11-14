@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Picker rows have **Domain** and **App** toggle buttons (text instead of the 📌 / ▢ icons). A green ✓ shows which browser holds the binding; clicking switches it on or off (`enabled: false`) without closing the picker. ⌥-click Domain binds the exact host (shown as ✓ Host)
+- `⌘R` in the picker opens `rules.json` (or reveals the folder if it doesn't exist yet) to remove or pause a binding
+
+### Changed
+
+- Picker footer now has hint lines for navigation, the Domain / App toggles, the bind-and-open shortcuts (`⌘P`, `⌘⇧P`), `⌘R`, and `⇧`-click to get the picker back for a bound link
+- Button tooltips name the target browser and explain what a click switches
+
+### Docs
+
+- Add a "bind, change, remove" cheat sheet to the README
+
 ## [2.0.0] - 2026-07-15
 
 ### Added

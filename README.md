@@ -17,27 +17,56 @@ browser.
   - Pick with a **number key (1–9)**, or arrow keys + **⏎**. **Esc** cancels.
   - The **full target URL** is visible (click the URL to expand it).
   - **⌘C** copies the URL to the clipboard.
+  - **⌘R** opens `rules.json` to remove or pause a binding (the link is not opened).
 - **Rules**: route by **URL pattern**, by the **source app** a link came from, or
   both. When a rule matches, the link opens **immediately, without the picker**:
   - _URL rule_ — `customer-x.com → Edge`, `localhost → Chrome`.
   - _App rule_ — `everything opened from Cursor → Chrome`, `Slack → Safari`.
   - _Combined_ — a URL pattern that only applies when opened from a given app.
-- **Learning**: every picker row has **two pins** —
-  - the **URL pin** (**⌘P** or the 📌 icon) binds the current domain to that
-    browser; hold **⌥** to remember the _exact host_ instead of the domain.
-  - the **App pin** (**⌘⇧P** or the ▢ icon) binds _every link from the app you
-    clicked in_ to that browser. Shown only when the source app is known.
+- **Learning**: every picker row has **two toggle buttons**. A button marked
+  **✓** (green) means that browser holds the binding. Click it to switch the
+  binding on or off. The picker stays open, so you then pick the browser to open
+  the link in.
+  - **Domain** (URL pin) binds the current domain to that browser. **⌥-click**
+    binds the _exact host_ only, and the button then reads **✓ Host**.
+  - **App** (App pin) binds _every link from the app you clicked in_ to that
+    browser. Shown only when the source app is known.
+  - Keyboard: **⌘P** (domain, **⌥⌘P** exact host) or **⌘⇧P** (app) binds the
+    selected browser _and_ opens the link in one step.
 - **Bypass**: hold **⇧ (Shift)** while clicking a link to skip the rules and get
   the picker anyway — even for a domain (or app) a rule already owns.
+
+### Cheat sheet: bind, change, remove
+
+The picker footer shows these hints too; hover a **Domain** / **App** button for a tooltip.
+
+| I want to…                                     | Do this                                                                                             |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Always open **this domain** in a browser       | Click **Domain** in that browser's row (or press **⌘P** to bind and open). Covers all subdomains.  |
+| Always open **only this exact host**           | **⌥-click Domain** (or **⌥⌘P**). `shop.x.com` is bound, `mail.x.com` is not.                       |
+| Always open **every link from this app**       | Click **App** (or **⌘⇧P**). Only shown when the picker says `from <app>`.                          |
+| See the picker again for a bound link          | Hold **⇧** while clicking the link.                                                                 |
+| **Move** a binding to another browser          | Hold **⇧**, click the link, click **Domain** / **App** in the other browser's row.                  |
+| **Switch a binding off**                       | Hold **⇧**, click the link, click the green **✓ Domain** / **✓ App** button.                        |
+| **Delete** a binding for good                  | In the picker press **⌘R** → `rules.json` opens. Delete the rule's `{ … }` block and save.          |
+| Remove **all** bindings                        | `rm ~/Library/Application\ Support/BrowserProxy/rules.json`                                         |
+
+Edits to `rules.json` apply to the next link, no restart. Keep the
+`{"version": 2, "rules": [...]}` wrapper and valid JSON (watch trailing commas
+after deleting a block): a file that does not parse disables **all** rules. ⌘R
+closes the picker without opening the link; click the link again afterwards.
+
+To find a rule quickly, search `rules.json` for the domain (`"pattern"`) or for
+the app's bundle ID (`"sourceAppBundleID"`), and check `browserBundleID` for the
+target.
 
 ### Picker behaviour worth knowing
 
 - Below the URL, the picker shows **`from <app>`** — the app the link was opened
-  from (when it could be determined). That app is what the **App pin** targets.
+  from (when it could be determined). That app is what the **App** button targets.
 - The mouse works too: **click a row** to open it, **hover** to move the
-  selection, **click a pin icon** to pin — the ▢ icon pins the app, the 📌 icon
-  pins the URL (**⌥-click** the 📌 for the exact host). The panel can be dragged
-  around by its background.
+  selection, **click Domain / App** to switch a binding on or off (**⌥-click**
+  Domain for the exact host). The panel can be dragged around by its background.
 - The picker **cancels when it loses focus** — click somewhere else and the link
   is dropped, not opened.
 - If several links arrive at once, they are **queued**: you get one picker after
@@ -246,16 +275,54 @@ rather than failing.
 Once a rule matches, that domain never reaches the picker again — so to change it,
 you first have to get the picker back:
 
-1. **Hold ⇧ while clicking the link.** The rules are skipped and the picker
-   appears, no matter what a rule says.
-2. **Pin the browser you actually want.** Re-pinning **rewrites the existing
-   rule's target** instead of adding a second, competing one — the **URL pin**
-   (⌘P) rewrites the URL rule for that domain, the **App pin** (⌘⇧P) rewrites the
-   app rule for that source app.
+1. **Hold ⇧ while clicking the link.** Keep holding it as you click; the rules
+   are skipped and the picker appears.
+2. **Click Domain or App in the row of the browser you want.** The green ✓ moves
+   to that row; the existing rule is rewritten rather than duplicated. Click the
+   green button again to switch the binding off. Then open the link by clicking
+   the row, or press **⌘P** / **⌘⇧P** to bind and open in one step.
 
-That covers re-targeting a rule. Deleting one, combining app + URL into one rule,
-or anything involving `glob`, `regex`, `priority` or `enabled`, still means
-editing `rules.json`.
+By default, the URL pin binds the **domain**, including its subdomains. For
+example, pinning `shop.customer-x.com/orders/42` normally binds
+`customer-x.com`, so other pages and subdomains use that browser too. Hold **⌥**
+while pinning (⌥-click **Domain**, or ⌥⌘P) to bind only the exact host
+`shop.customer-x.com`; it still applies to every path on that host. `localhost`
+and IP addresses are always pinned as exact hosts. A single URL path is not a
+pin option; use an `exact`, `glob`, or `regex` rule in `rules.json` for that.
+
+### Remove or pause a binding
+
+To **pause** a binding, hold ⇧ while clicking the link and click the green
+**✓ Domain** / **✓ App** button. That sets `"enabled": false` in `rules.json`; the
+rule stays there and clicking the button again switches it back on.
+
+To **delete** a rule, or pause one the buttons don't cover (hand-written
+`glob`, `regex`, `exact` or combined app + URL rules), edit the file:
+
+1. Open the rules file: press **⌘R** in the picker (it closes without opening
+   the link), or from the terminal:
+
+   ```sh
+   open -e "$HOME/Library/Application Support/BrowserProxy/rules.json"
+   ```
+
+2. Find the rule you want to change. URL pins have a `pattern` and `matchType`
+   but no `sourceAppBundleID`; app pins have `sourceAppBundleID` but no
+   `pattern`.
+3. To **remove** it, delete that rule's whole `{ ... }` object from the
+   `"rules"` array. Keep commas between remaining rules, and leave the outer
+   `{"version": 2, "rules": [...]}` structure intact. Save the file.
+   To **pause** it instead, change `"enabled": true` to `"enabled": false`;
+   change it back to `true` to restore it.
+
+Edits take effect on the next link; BrowserProxy re-reads `rules.json` each
+time, so no restart is needed. If you remove a rule but still have a broader
+URL or app rule, that other rule may continue routing the link. To make a link
+show the picker, remove or disable every matching rule. For one link only, hold
+⇧ while clicking it to bypass all rules without changing them.
+
+Deleting a rule, combining app + URL into one rule, or changing `glob`, `regex`,
+`priority` or `enabled` still requires editing `rules.json`.
 
 The bypass modifier is configurable — see `bypassModifier` below. Note it is read
 at the moment the link arrives, so you have to be _holding_ the key as you click,
@@ -263,7 +330,7 @@ not press it afterwards.
 
 ### What pinning writes
 
-The **URL pin** (⌘P or the 📌 icon) creates a `domainSuffix` rule for the
+The **Domain** button (or ⌘P) creates a `domainSuffix` rule for the
 **registrable domain**, so pinning `shop.customer-x.com` writes `customer-x.com`
 and thereby also covers `mail.customer-x.com`. Multi-label public suffixes are
 handled, so `shop.example.co.uk` writes `example.co.uk` and not `co.uk` — though
@@ -271,11 +338,14 @@ the list of those suffixes is a common-cases table, not the full Public Suffix
 List. Hold **⌥** while pinning to write a `domain` rule for the **exact host**
 instead. `localhost` and IP literals are always pinned exactly.
 
-The **App pin** (⌘⇧P or the ▢ icon) creates an app-only rule for the source app —
+The **App** button (or ⌘⇧P) creates an app-only rule for the source app —
 `sourceAppBundleID` set, no `pattern`. It is offered only when the source app is
 known (the picker shows `from <app>`).
 
-Pinning the same target twice does not create a duplicate rule.
+Pinning the same target twice does not create a duplicate rule. Switching a
+button off sets `"enabled": false` on the rule instead of deleting it. The Domain
+button only tracks the two rule shapes it writes (domain suffix and exact host);
+a hand-written rule for the same site does not show as ✓.
 
 ### `preferences.json`
 
@@ -348,7 +418,7 @@ resident in the background.
 - No menu bar icon and no settings window — preferences are a JSON file.
 - No rule editor. Pinning creates and re-targets rules (⇧ + pin, see above), but
   deleting a rule or setting `priority`, `enabled`, `glob` or `regex` means
-  editing `rules.json`.
+  editing `rules.json` (⌘R in the picker opens it).
 - No automated tests.
 
 ## License

@@ -137,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             url: pending.url,
             source: pending.source,
             browsers: registry.browsers,
+            rules: rules,
             showFullURLByDefault: prefs.preferences.showFullURLByDefault
         ) { [weak self] result in
             self?.handle(result: result, for: pending)

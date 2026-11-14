@@ -29,6 +29,7 @@ final class PickerController {
     private var url: URL!
     private var source: SourceApp?
     private var browsers: [Browser] = []
+    private var rules: RuleStore?
     private var onResolve: ((Result) -> Void)?
 
     private var selectedIndex = 0
@@ -42,6 +43,7 @@ final class PickerController {
         url: URL,
         source: SourceApp?,
         browsers: [Browser],
+        rules: RuleStore,
         showFullURLByDefault: Bool,
         onResolve: @escaping (Result) -> Void
     ) {
@@ -51,6 +53,7 @@ final class PickerController {
         self.url = url
         self.source = source
         self.browsers = browsers
+        self.rules = rules
         self.onResolve = onResolve
         self.selectedIndex = 0
         self.urlExpanded = showFullURLByDefault
@@ -152,19 +155,24 @@ final class PickerController {
         for (i, browser) in browsers.enumerated() {
             let row = BrowserRowView(index: i, browser: browser, sourceAppName: source?.name)
             row.onOpen = { [weak self] in self?.choose(index: i) }
-            row.onPinURL = { [weak self] exact in self?.choosePinnedURL(index: i, exactHost: exact) }
-            row.onPinApp = { [weak self] in self?.choosePinnedApp(index: i) }
+            row.onToggleURL = { [weak self] exact in self?.toggleURLPin(index: i, exactHost: exact) }
+            row.onToggleApp = { [weak self] in self?.toggleAppPin(index: i) }
             row.onHover = { [weak self] in self?.highlight(index: i) }
             rowViews.append(row)
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalToConstant: 336).isActive = true
         }
+        refreshPins()
 
-        // Footer hint.
-        let hint = NSTextField(labelWithString: footerHint())
-        hint.font = .systemFont(ofSize: 10)
-        hint.textColor = .tertiaryLabelColor
-        stack.addArrangedSubview(hint)
+        // Footer hints: navigation, how to pin, how to change or remove a pin.
+        for line in footerHints() {
+            let hint = NSTextField(wrappingLabelWithString: line)
+            hint.font = .systemFont(ofSize: 10)
+            hint.textColor = .tertiaryLabelColor
+            hint.isSelectable = false
+            hint.preferredMaxLayoutWidth = 336
+            stack.addArrangedSubview(hint)
+        }
 
         container.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -176,11 +184,33 @@ final class PickerController {
         return container
     }
 
-    private func footerHint() -> String {
-        var parts = ["1–9 open", "↑↓ move", "⏎ open", "⌘C copy", "⌘P pin URL"]
-        if source != nil { parts.append("⌘⇧P pin App") }
-        parts.append("esc cancel")
-        return parts.joined(separator: " · ")
+    private func footerHints() -> [String] {
+        let navigation = ["1–9 open", "↑↓ move", "⏎ open", "⌘C copy", "esc cancel"]
+        let buttons = source == nil
+            ? "Domain button: click to switch the binding on/off (⌥-click: exact host)"
+            : "Domain / App buttons: click to switch a binding on/off (⌥-click: exact host)"
+        var keys = ["⌘P bind domain + open"]
+        if source != nil { keys.append("⌘⇧P bind app + open") }
+        keys.append("⌘R rules")
+        return [
+            navigation.joined(separator: " · "),
+            buttons,
+            keys.joined(separator: " · "),
+            "Bound links skip this picker; hold ⇧ while clicking to see it again.",
+        ]
+    }
+
+    /// Opens rules.json in its default editor so a rule can be deleted, or reveals
+    /// the folder in Finder when no rule has been written yet. The picker loses
+    /// focus and cancels; the link is not opened.
+    private func openRulesFile() {
+        let file = AppSupport.url(for: "rules.json")
+        if FileManager.default.fileExists(atPath: file.path) {
+            NSWorkspace.shared.open(file)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([AppSupport.directory])
+        }
+        cancel()
     }
 
     private func displayURL() -> String {
@@ -233,6 +263,8 @@ final class PickerController {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "c":
                 copyURL(); return true
+            case "r":
+                openRulesFile(); return true
             case "p":
                 if mods.contains(.shift) {
                     // ⌘⇧P → pin the source app.
@@ -275,6 +307,45 @@ final class PickerController {
         pb.setString(url.absoluteString, forType: .string)
     }
 
+    // MARK: - Pin toggles
+
+    /// Domain button: switches the URL binding on for this browser, or off when
+    /// it is already bound here. Only one browser holds the binding at a time.
+    private func toggleURLPin(index: Int, exactHost: Bool) {
+        guard let rules, browsers.indices.contains(index) else { return }
+        let browser = browsers[index]
+        let active = rules.activeURLPin(for: url)
+        rules.disableURLPins(for: url)
+        if active?.browserID != browser.id {
+            rules.learnURL(url: url, browser: browser, exactHost: exactHost)
+        }
+        refreshPins()
+    }
+
+    /// App button: switches "every link from this app" on for this browser, or
+    /// off when it is already bound here.
+    private func toggleAppPin(index: Int) {
+        guard let rules, let source, browsers.indices.contains(index) else { return }
+        let browser = browsers[index]
+        if rules.activeAppPin(for: source) == browser.id {
+            rules.disableAppPin(for: source)
+        } else {
+            rules.learnApp(source: source, browser: browser)
+        }
+        refreshPins()
+    }
+
+    /// Updates every row's buttons from the current rules.
+    private func refreshPins() {
+        let urlPin = rules?.activeURLPin(for: url)
+        let appPin = source.flatMap { rules?.activeAppPin(for: $0) }
+        for (i, row) in rowViews.enumerated() {
+            let id = browsers[i].id
+            row.setURLPin(active: urlPin?.browserID == id, exactHost: urlPin?.exactHost ?? false)
+            row.setAppPin(active: appPin == id)
+        }
+    }
+
     private func choose(index: Int) {
         guard browsers.indices.contains(index) else { return }
         resolve(.open(browsers[index], pin: .none))
@@ -314,6 +385,7 @@ final class PickerController {
         panel = nil
         rowViews.removeAll()
         urlLabel = nil
+        rules = nil
         onResolve = nil
     }
 }

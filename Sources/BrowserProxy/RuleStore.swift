@@ -140,6 +140,64 @@ final class RuleStore {
         add(Rule(sourceAppBundleID: source.bundleID, browserBundleID: browser.id))
     }
 
+    // MARK: - Pin state (picker toggle buttons)
+
+    /// Indices of URL-only rules a URL pin for `url` would write: the domain and the
+    /// exact-host variant. Rules written by hand in other shapes are not touched.
+    private func urlPinIndices(for url: URL) -> [Int] {
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return [] }
+        let candidates = [
+            Self.rulePattern(forHost: host, exactHost: false),
+            Self.rulePattern(forHost: host, exactHost: true),
+        ]
+        return rules.indices.filter { i in
+            let r = rules[i]
+            return r.sourceAppBundleID == nil
+                && candidates.contains { $0.0 == r.pattern && $0.1 == r.matchType }
+        }
+    }
+
+    /// The enabled URL pin for `url`, preferring the exact-host rule (it wins in
+    /// matching). `exactHost` tells the picker whether to label it Host or Domain.
+    func activeURLPin(for url: URL) -> (browserID: String, exactHost: Bool)? {
+        let active = urlPinIndices(for: url)
+            .map { rules[$0] }
+            .filter(\.enabled)
+            .max { Self.specificity($0) < Self.specificity($1) }
+        guard let active else { return nil }
+        let exact = active.matchType == .domain && active.pattern == url.host?.lowercased()
+        return (active.browserBundleID, exact)
+    }
+
+    /// Switches every URL pin for `url` off (`enabled: false`), keeping the rules
+    /// in rules.json so they can be switched on again.
+    func disableURLPins(for url: URL) {
+        var changed = false
+        for i in urlPinIndices(for: url) where rules[i].enabled {
+            rules[i].enabled = false
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    /// Browser bundle ID of the enabled app-only rule for `source`, if any.
+    func activeAppPin(for source: SourceApp) -> String? {
+        rules.first {
+            $0.sourceAppBundleID == source.bundleID && !$0.hasURLCondition && $0.enabled
+        }?.browserBundleID
+    }
+
+    /// Switches the app-only rule for `source` off (`enabled: false`).
+    func disableAppPin(for source: SourceApp) {
+        var changed = false
+        for i in rules.indices
+        where rules[i].sourceAppBundleID == source.bundleID && !rules[i].hasURLCondition && rules[i].enabled {
+            rules[i].enabled = false
+            changed = true
+        }
+        if changed { save() }
+    }
+
     /// Derives a rule pattern from a host. `shop.kunde-x.de` → `kunde-x.de`
     /// (domainSuffix); `localhost` and IP literals stay exact.
     static func rulePattern(forHost host: String, exactHost: Bool) -> (String, MatchType) {
